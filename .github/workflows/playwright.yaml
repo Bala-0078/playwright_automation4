@@ -1,0 +1,139 @@
+name: Playwright Regression Testing
+
+# Trigger the workflow on push to main branch and pull requests
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Run tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  test:
+    name: Run Playwright Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+      fail-fast: false
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libnss3-dev libatk-bridge2.0-dev libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 libasound2
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Install Playwright browsers
+      run: |
+        playwright install chromium
+        playwright install-deps chromium
+    
+    - name: Create output directories
+      run: |
+        mkdir -p screenshots
+        mkdir -p logs
+        mkdir -p test-results
+    
+    - name: Run Playwright tests with pytest
+      run: |
+        pytest test_site.py -v --tb=short --html=test-results/report.html --self-contained-html
+      env:
+        PYTHONPATH: .
+    
+    - name: Run Playwright tests (standalone)
+      if: failure()
+      run: |
+        python test_site.py
+      continue-on-error: true
+    
+    - name: Upload test artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results-python-${{ matrix.python-version }}
+        path: |
+          screenshots/
+          logs/
+          test-results/
+          test_logs.txt
+        retention-days: 30
+    
+    - name: Upload screenshots
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: screenshots-python-${{ matrix.python-version }}
+        path: screenshots/
+        retention-days: 7
+    
+    - name: Upload test logs
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-logs-python-${{ matrix.python-version }}
+        path: |
+          test_logs.txt
+          logs/
+        retention-days: 14
+    
+    - name: Display test summary
+      if: always()
+      run: |
+        echo "=== Test Execution Summary ==="
+        echo "Python Version: ${{ matrix.python-version }}"
+        echo "Timestamp: $(date)"
+        if [ -f test_logs.txt ]; then
+          echo "=== Test Logs ==="
+          tail -20 test_logs.txt
+        fi
+        if [ -d screenshots ]; then
+          echo "=== Screenshots Generated ==="
+          ls -la screenshots/
+        fi
+
+  # Notification job that runs after all test jobs complete
+  notify:
+    name: Test Results Notification
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    
+    steps:
+    - name: Notify on success
+      if: needs.test.result == 'success'
+      run: |
+        echo "✅ All Playwright regression tests passed successfully!"
+        echo "Test execution completed at: $(date)"
+    
+    - name: Notify on failure
+      if: needs.test.result == 'failure'
+      run: |
+        echo "❌ Some Playwright regression tests failed!"
+        echo "Please check the test artifacts for detailed information."
+        echo "Test execution completed at: $(date)"
+        exit 1
